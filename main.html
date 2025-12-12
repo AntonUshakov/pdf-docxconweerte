@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF → DOCX Converter</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docx@8.0.2/build/index.umd.js"></script>
+</head>
+<body class="p-6">
+  <h1>PDF → DOCX Converter</h1>
+  <input type="file" id="pdfInput" accept="application/pdf" />
+  <button id="convertBtn">Convert</button>
+  <script>
+    document.getElementById("convertBtn").onclick = async () => {
+      const file = document.getElementById("pdfInput").files[0];
+      if (!file) return alert("Upload PDF first");
+
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+      const paragraphs = [];
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map((t) => t.str).join(" ");
+        paragraphs.push(new docx.Paragraph(pageText));
+      }
+
+      const doc = new docx.Document({ sections: [{ children: paragraphs }] });
+      const blob = await docx.Packer.toBlob(doc);
+
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = file.name.replace(".pdf", "_converted.docx");
+      link.click();
+    };
+  </script>
+</body>
+</html>
