@@ -19,18 +19,19 @@
       const arrayBuffer = await file.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-      const paragraphs = [];
+      let fullText = "";
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
         const pageText = textContent.items.map((t) => t.str).join(" ");
-        paragraphs.push(new text.Paragraph(pageText));
+        fullText += `\n\n--- Page ${i} ---\n\n` + pageText;
       }
 
-            const textOutput = paragraphs.join("\n\n");
       const pre = document.createElement("pre");
-      pre.textContent = textOutput;
-      document.body.appendChild(pre);();
+      pre.style.whiteSpace = "pre-wrap";
+      pre.style.marginTop = "20px";
+      pre.textContent = fullText;
+      document.body.appendChild(pre);
     };
   </script>
 </body>
