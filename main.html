@@ -1,46 +1,186 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PDF → Text Converter</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PDF → Plain Text (LaTeX-aware)</title>
 
   <!-- PDF.js core + worker -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
   <script>
-    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
   </script>
+
+  <style>
+    body{font-family:Inter,system-ui,Segoe UI,Roboto,Arial;margin:18px;background:#fbfbfc;color:#111}
+    h1{margin:0 0 8px 0}
+    .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    input[type=file]{padding:6px}
+    input[type=text]{padding:6px;border-radius:6px;border:1px solid #ddd}
+    button{padding:8px 12px;border-radius:8px;border:1px solid #ccc;background:#f7f7f7;cursor:pointer}
+    #status{margin-top:10px;color:#444;font-size:0.95rem}
+    #output{white-space:pre-wrap;background:#fff;border:1px solid #e3e3e3;padding:12px;margin-top:14px;border-radius:8px;max-height:60vh;overflow:auto}
+    .hint{font-size:0.9rem;color:#666;margin:6px 0}
+  </style>
 </head>
-<body class="p-6">
-  <h1>PDF → DOCX Converter</h1>
-  <input type="file" id="pdfInput" accept="application/pdf" />
-  <button id="convertBtn">Convert</button>
+<body>
+  <h1>PDF → Plain Text (LaTeX-aware)</h1>
+  <div class="hint">This tool extracts text from PDF pages and applies heuristics to replace common math fragments with LaTeX-style markup (best-effort).</div>
+
+  <div class="controls">
+    <input id="pdfInput" type="file" accept="application/pdf" />
+    <input id="pageRange" type="text" placeholder="pages (e.g. 1-3,5). Leave empty = all" style="width:220px" />
+    <button id="extractBtn">Extract</button>
+    <button id="copyBtn">Copy</button>
+    <button id="saveBtn">Save .txt</button>
+  </div>
+
+  <div id="status"></div>
+  <pre id="output"></pre>
+
   <script>
-    document.getElementById("convertBtn").onclick = async () => {
-      const file = document.getElementById("pdfInput").files[0];
-      if (!file) return alert("Upload PDF first");
+  // --- utilities ---
+  function parsePages(input, maxPages){
+    if(!input) return null;
+    const parts = input.split(',').map(s=>s.trim()).filter(Boolean);
+    const pages = new Set();
+    for(const part of parts){
+      if(part.includes('-')){
+        const [a,b] = part.split('-').map(x=>parseInt(x,10));
+        if(!isFinite(a) || !isFinite(b)) continue;
+        for(let i=Math.max(1,a); i<=Math.min(maxPages,b); i++) pages.add(i);
+      } else {
+        const n = parseInt(part,10);
+        if(isFinite(n) && n>=1 && n<=maxPages) pages.add(n);
+      }
+    }
+    return Array.from(pages).sort((a,b)=>a-b);
+  }
 
+  // Heuristic LaTeX-aware cleaning function (best-effort)
+  function latexizeText(txt){
+    let s = String(txt);
+
+    // basic normalizations
+    s = s.replace(/\u00A0/g,' ');
+    s = s.replace(/\u2013|\u2014/g,'-');
+    s = s.replace(/\u2018|\u2019|\u201C|\u201D/g,"'");
+    s = s.replace(/\s{2,}/g,' ');
+
+    // function names -> \sin \cos etc.
+    const funcs = ['sin','cos','tan','log','ln','exp','lim','max','min','arcsin','arccos','arctan'];
+    for(const f of funcs){
+      const re = new RegExp('\\b'+f+'\\b','gi');
+      s = s.replace(re, m => '\\' + m.toLowerCase());
+    }
+
+    // simple fractions: 1/2 -> \frac{1}{2}
+    // avoid converting obvious dates like 2020/12 by limiting digits length
+    s = s.replace(/(?<!\\d)(\\d{1,3})\\/(\\d{1,3})(?!\\d)/g, '\\\\frac{$1}{$2}');
+
+    // sqrt and √
+    s = s.replace(/sqrt\\s*\\(?\\s*([^\\s,)]+)\\s*\\)?/gi, '\\\\sqrt{$1}');
+    s = s.replace(/√\\s*([^\\s,)+]+)/g, '\\\\sqrt{$1}');
+
+    // superscripts: x^2 or x ^ 10 -> x^{2}
+    s = s.replace(/([A-Za-z0-9)\\}])\\s*\\^\\s*{?\\s*([A-Za-z0-9+-]+)\\s*}?/g, '$1^{\$2}');
+
+    // subscripts: a_2 -> a_{2}
+    s = s.replace(/([A-Za-z0-9)\\}])_\\s*{?\\s*([A-Za-z0-9]+)\\s*}?/g, '$1_{\$2}');
+
+    // multiplication & arrows & pi
+    s = s.replace(/×/g, ' \\\\times ');
+    s = s.replace(/=>|->|→/g, '\\\\to');
+    s = s.replace(/<=|<-|←/g, '\\\\leftarrow');
+    s = s.replace(/\\bpi\\b/gi, '\\\\pi');
+
+    // wrap likely math snippets in $...$ (heuristic)
+    s = s.replace(/((?:\\\\?\\w+|[A-Za-z0-9\\^_{}()\\/\\+\\-\\*=<>%:.]+){2,})/g, function(m){
+      if(/\\$/.test(m)) return m;
+      if(/[0-9]|\\\\frac|\\\\sqrt|\\^|_|\\\\times|\\+|\\-|=|\\\\pi|\\/|\\(|\\)/.test(m)){
+        return '$' + m + '$';
+      }
+      return m;
+    });
+
+    // tidy up double spaces around $ and escape sequences
+    s = s.replace(/\\$\\s+\\$/g,'$$');
+    s = s.replace(/\\s+\\$/g,'$');
+    s = s.replace(/\\$\\s+/g,'$');
+
+    return s;
+  }
+
+  // --- main actions ---
+  document.getElementById('extractBtn').onclick = async () => {
+    const file = document.getElementById('pdfInput').files[0];
+    const status = document.getElementById('status');
+    const out = document.getElementById('output');
+    out.textContent = '';
+    status.textContent = '';
+
+    if(!file){ alert('Choose a PDF file first'); return; }
+    status.textContent = 'Loading PDF...';
+
+    try {
       const arrayBuffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+      const pdf = await loadingTask.promise;
+      status.textContent = `Loaded — ${pdf.numPages} pages.`;
 
-      let fullText = "";
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        const pageText = textContent.items.map((t) => t.str).join(" ");
-        fullText += `
+      const pagesParsed = parsePages(document.getElementById('pageRange').value, pdf.numPages);
+      const pageList = pagesParsed || Array.from({length: pdf.numPages}, (_,i)=>i+1);
 
---- Page ${i} ---
+      status.textContent = `Extracting ${pageList.length} page(s)...`;
+      let full = '';
 
-` + pageText;
+      for(const pnum of pageList){
+        try{
+          const page = await pdf.getPage(pnum);
+          const content = await page.getTextContent();
+          // The PDF text content is a sequence of items; join them with spaces.
+          // If you need layout-preserving extraction, more advanced methods are required.
+          const items = content.items.map(it => it.str || '');
+          let pageText = items.join(' ');
+
+          // small cleanups
+          pageText = pageText.replace(/\s+\u2014\s+/g,' - ').replace(/\s{2,}/g,' ');
+
+          // LaTeX-aware transform
+          pageText = latexizeText(pageText);
+
+          full += `\n\n--- Page ${pnum} ---\n\n` + pageText;
+          status.textContent = `Extracted page ${pnum}`;
+        } catch(e){
+          full += `\n\n--- Page ${pnum} (error) ---\n\n` + String(e);
+        }
       }
 
-      const pre = document.createElement("pre");
-      pre.style.whiteSpace = "pre-wrap";
-      pre.style.marginTop = "20px";
-      pre.textContent = fullText;
-      document.body.appendChild(pre);
-    };
+      out.textContent = full.trim();
+      status.textContent = `Done — ${pageList.length} pages. Use Copy or Save.`;
+    } catch(err){
+      status.textContent = 'Error: ' + String(err);
+      console.error(err);
+    }
+  };
+
+  document.getElementById('copyBtn').onclick = async () => {
+    const txt = document.getElementById('output').textContent;
+    if(!txt){ alert('Nothing to copy'); return; }
+    await navigator.clipboard.writeText(txt);
+    document.getElementById('status').textContent = 'Copied to clipboard.';
+  };
+
+  document.getElementById('saveBtn').onclick = () => {
+    const txt = document.getElementById('output').textContent;
+    if(!txt){ alert('Nothing to save'); return; }
+    const blob = new Blob([txt], {type:'text/plain;charset=utf-8'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'extracted.txt';
+    a.click();
+  };
   </script>
 </body>
 </html>
